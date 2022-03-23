@@ -1,6 +1,12 @@
 ------------------------------ MODULE Derived ------------------------------
 EXTENDS Integers, Sequences, TLC, FiniteSets
 
+\* This module models a method to keep in-memory derived metadata consistent 
+\* with persisted collection data. The model includes snapshot and timestamp
+\* semantics as implemented in MongoDB and the WiredTiger storage engine.
+\* For simplicity model a single key/value store, and a single metadata value
+\* representing the sum of all values.
+
 \* To be set in model, see 'data' variable below.
 CONSTANT InitData, InitTxns
 
@@ -8,23 +14,34 @@ CONSTANT InitData, InitTxns
 RECURSIVE SeqToSet(_)
 SeqToSet(seq) == IF seq = << >> THEN {} ELSE { Head(seq) } \cup SeqToSet(Tail(seq))
 
-
-\* Reduction operator
+PickValueOr(set, default) == IF set = {} THEN default ELSE CHOOSE s \in set : TRUE 
+ 
+\* Reduction operator for Sequences and Sets
+RECURSIVE SeqReduce(_, _, _)
+SeqReduce(Op(_, _), seq, value) ==
+   IF seq = <<>> THEN value
+                 ELSE SeqReduce(Op, Tail(seq), Op(Head(seq), value))
 RECURSIVE SetReduce(_, _, _)
-SetReduce(Op(_, _), S, value) ==
-   IF S = {} THEN value
-             ELSE LET s == (CHOOSE s \in S : TRUE) IN SetReduce(Op, S \ {s}, Op(s, value))
+SetReduce(Op(_, _), set, value) ==
+   IF set = {} THEN value
+               ELSE LET elem == (CHOOSE elem \in set : TRUE)
+                    IN SetReduce (Op, set \ {elem}, Op(elem, value))
 
-Sum(S) == LET sum(a, b) == a + b IN SetReduce(sum, S, 0)
+Sum(S) == LET sum(a, b) == a + b
+          IN SeqReduce(sum, S, 0)
 
-SumDataValues(data) == LET add(a, b) == a[3] + b IN SetReduce(add, data, 0)
+SumDataValues(data) == LET add(a, b) == a[3] + b
+                       IN SetReduce(add, data, 0)
 
 Key(data, key) == { d \in data : d[2] = key }
 At(data, time) == { d \in data : d[1] =< time }
-Last(data) == { d \in data : (~\E d2 \in data : d2[1] > d[1]) }
+Last(data) == { d \in data : (\A d2 \in data : d2[1] <= d[1]) }
 
 ReadAt(data, key, time) == Last(At(Key(data, key), time))
-
+MetaAt(meta, time) == LET add(a, b) == b + (IF a[1] <= time THEN a[1]
+                                                            ELSE 0)
+                      IN SetReduce(add, meta, 0)
+\* `^\newpage^'
 (*********
 
 --algorithm Metadata {
@@ -32,27 +49,28 @@ ReadAt(data, key, time) == Last(At(Key(data, key), time))
 variables
     \* Process Ids
     Proc = {1, 2};
-    \* A set of transactions, each with a sequence of << key, value >> pairs to be upserted
+
+    \* A set of transactions, each with a sequence of << key, value >> pairs to be upserted.
     txns = InitTxns,
 
-    \* Set of keys with uncommitted writes pending
+    \* Set of keys with uncommitted writes pending.
     uncommitted = { },
-    \* Set of all locally committed writes to the database as << optime, key, value >> pairs
+    \* Set of all locally committed writes to the database as << optime, key, value >> pairs.
     data = InitData,
-    \* meta is set of <<optime, value >> pairs reflecting
-    \*
+    \* `meta' is a set of <<optime, value >> pairs reflecting the in-memory derived metadata state.
     meta = { <<0, SumDataValues (data) >> },
-    lastOpTime = 0
-    ;
+    
+    lastOpTime = 0;
 
     procedure Observe(opTime, snapshot, txn)
     variables
         delta;
     {
     l1:
-        \* delta := [ i \in 1 .. Len(txn) |-> txn[i][2] - Pick(Last(Key(snapshot, txn[i][1]))[3]];
-        \* meta := meta \cup { << opTime, Sum(SeqToSet(delta)) >> };
-
+        delta := [i \in 1 .. Len(txn) |->
+                 txn[i][2] - PickValueOr(Last(Key(snapshot, txn[i][1])), <<0, txn[i][1], 0>>)[3]];
+        meta := meta \cup { << opTime, Sum(delta) >> };
+    l2:
        return;
     };
 
@@ -80,6 +98,7 @@ variables
         uncommitted := { key \in uncommitted : (\A i \in 1 .. Len(txn) : txn[i][1] /= key) };
         data := data \cup SeqToSet([ i \in 1 .. Len(txn) |-> << opTime >> \o txn[i] ]);
     onCommit:
+        \* assert MetaAt(meta, opTime) = SumDataValues(At(data, opTime));
         return;
     };
 
@@ -97,15 +116,15 @@ variables
 
 ********)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "c3ae71bf" /\ chksum(tla) = "aa673078")
-\* Procedure variable snapshot of procedure ApplyOps at line 61 col 9 changed to snapshot_
-\* Procedure variable opTime of procedure ApplyOps at line 62 col 9 changed to opTime_
-\* Parameter txn of procedure Observe at line 48 col 41 changed to txn_
+\* BEGIN TRANSLATION (chksum(pcal) = "134c96a9" /\ chksum(tla) = "bae07035")
+\* Procedure variable snapshot of procedure ApplyOps at line 79 col 9 changed to snapshot_
+\* Procedure variable opTime of procedure ApplyOps at line 80 col 9 changed to opTime_
+\* Parameter txn of procedure Observe at line 65 col 41 changed to txn_
 CONSTANT defaultInitValue
-VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime,
+VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
           snapshot, txn_, delta, txn, snapshot_, opTime_, stmtId
 
-vars == << Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime,
+vars == << Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
            snapshot, txn_, delta, txn, snapshot_, opTime_, stmtId >>
 
 ProcSet == (Proc)
@@ -131,16 +150,25 @@ Init == (* Global variables *)
         /\ pc = [self \in ProcSet |-> "l3"]
 
 l1(self) == /\ pc[self] = "l1"
+            /\ delta' = [delta EXCEPT ![self] = [i \in 1 .. Len(txn_[self]) |->
+                                                txn_[self][i][2] - PickValueOr(Last(Key(snapshot[self], txn_[self][i][1])), <<0, txn_[self][i][1], 0>>)[3]]]
+            /\ meta' = (meta \cup { << opTime[self], Sum(delta'[self]) >> })
+            /\ pc' = [pc EXCEPT ![self] = "l2"]
+            /\ UNCHANGED << Proc, txns, uncommitted, data, lastOpTime, stack, 
+                            opTime, snapshot, txn_, txn, snapshot_, opTime_, 
+                            stmtId >>
+
+l2(self) == /\ pc[self] = "l2"
             /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
             /\ delta' = [delta EXCEPT ![self] = Head(stack[self]).delta]
             /\ opTime' = [opTime EXCEPT ![self] = Head(stack[self]).opTime]
             /\ snapshot' = [snapshot EXCEPT ![self] = Head(stack[self]).snapshot]
             /\ txn_' = [txn_ EXCEPT ![self] = Head(stack[self]).txn_]
             /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-            /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime,
+            /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
                             txn, snapshot_, opTime_, stmtId >>
 
-Observe(self) == l1(self)
+Observe(self) == l1(self) \/ l2(self)
 
 write(self) == /\ pc[self] = "write"
                /\ IF stmtId[self] < Len(txn[self])
@@ -150,16 +178,16 @@ write(self) == /\ pc[self] = "write"
                           /\ pc' = [pc EXCEPT ![self] = "write"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "nextOpTime"]
                           /\ UNCHANGED << uncommitted, stmtId >>
-               /\ UNCHANGED << Proc, txns, data, meta, lastOpTime, stack,
-                               opTime, snapshot, txn_, delta, txn, snapshot_,
+               /\ UNCHANGED << Proc, txns, data, meta, lastOpTime, stack, 
+                               opTime, snapshot, txn_, delta, txn, snapshot_, 
                                opTime_ >>
 
 nextOpTime(self) == /\ pc[self] = "nextOpTime"
                     /\ lastOpTime' = lastOpTime + 1
                     /\ opTime_' = [opTime_ EXCEPT ![self] = lastOpTime']
                     /\ pc' = [pc EXCEPT ![self] = "observe"]
-                    /\ UNCHANGED << Proc, txns, uncommitted, data, meta, stack,
-                                    opTime, snapshot, txn_, delta, txn,
+                    /\ UNCHANGED << Proc, txns, uncommitted, data, meta, stack, 
+                                    opTime, snapshot, txn_, delta, txn, 
                                     snapshot_, stmtId >>
 
 observe(self) == /\ pc[self] = "observe"
@@ -175,15 +203,15 @@ observe(self) == /\ pc[self] = "observe"
                     /\ txn_' = [txn_ EXCEPT ![self] = txn[self]]
                  /\ delta' = [delta EXCEPT ![self] = defaultInitValue]
                  /\ pc' = [pc EXCEPT ![self] = "l1"]
-                 /\ UNCHANGED << Proc, txns, uncommitted, data, meta,
+                 /\ UNCHANGED << Proc, txns, uncommitted, data, meta, 
                                  lastOpTime, txn, snapshot_, opTime_, stmtId >>
 
 commitTransaction(self) == /\ pc[self] = "commitTransaction"
                            /\ uncommitted' = { key \in uncommitted : (\A i \in 1 .. Len(txn[self]) : txn[self][i][1] /= key) }
                            /\ data' = (data \cup SeqToSet([ i \in 1 .. Len(txn[self]) |-> << opTime_[self] >> \o txn[self][i] ]))
                            /\ pc' = [pc EXCEPT ![self] = "onCommit"]
-                           /\ UNCHANGED << Proc, txns, meta, lastOpTime, stack,
-                                           opTime, snapshot, txn_, delta, txn,
+                           /\ UNCHANGED << Proc, txns, meta, lastOpTime, stack, 
+                                           opTime, snapshot, txn_, delta, txn, 
                                            snapshot_, opTime_, stmtId >>
 
 onCommit(self) == /\ pc[self] = "onCommit"
@@ -193,7 +221,7 @@ onCommit(self) == /\ pc[self] = "onCommit"
                   /\ stmtId' = [stmtId EXCEPT ![self] = Head(stack[self]).stmtId]
                   /\ txn' = [txn EXCEPT ![self] = Head(stack[self]).txn]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                  /\ UNCHANGED << Proc, txns, uncommitted, data, meta,
+                  /\ UNCHANGED << Proc, txns, uncommitted, data, meta, 
                                   lastOpTime, opTime, snapshot, txn_, delta >>
 
 ApplyOps(self) == write(self) \/ nextOpTime(self) \/ observe(self)
@@ -216,9 +244,9 @@ l3(self) == /\ pc[self] = "l3"
                             /\ stmtId' = [stmtId EXCEPT ![self] = 0]
                             /\ pc' = [pc EXCEPT ![self] = "write"]
                   ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                       /\ UNCHANGED << txns, stack, txn, snapshot_, opTime_,
+                       /\ UNCHANGED << txns, stack, txn, snapshot_, opTime_, 
                                        stmtId >>
-            /\ UNCHANGED << Proc, uncommitted, data, meta, lastOpTime, opTime,
+            /\ UNCHANGED << Proc, uncommitted, data, meta, lastOpTime, opTime, 
                             snapshot, txn_, delta >>
 
 writer(self) == l3(self)
@@ -238,5 +266,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION
 =============================================================================
 \* Modification History
-\* Last modified Wed Mar 16 18:34:43 EDT 2022 by bosch
+\* Last modified Wed Mar 23 17:44:12 EDT 2022 by bosch
 \* Created Mon Mar 14 08:30:23 EDT 2022 by bosch

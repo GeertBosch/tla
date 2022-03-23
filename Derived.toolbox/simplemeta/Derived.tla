@@ -6,7 +6,7 @@ EXTENDS Integers, Sequences, TLC, FiniteSets
 \* semantics as implemented in MongoDB and the WiredTiger storage engine.
 \* For simplicity model a single key/value store, and a single metadata value
 \* representing the sum of all values.
- 
+
 \* To be set in model, see 'data' variable below.
 CONSTANT InitData, InitTxns
 
@@ -15,24 +15,32 @@ RECURSIVE SeqToSet(_)
 SeqToSet(seq) == IF seq = << >> THEN {} ELSE { Head(seq) } \cup SeqToSet(Tail(seq))
 
 PickValueOr(set, default) == IF set = {} THEN default ELSE CHOOSE s \in set : TRUE 
-
-\* Reduction operator for sequences
+ 
+\* Reduction operator for Sequences and Sets
+RECURSIVE SeqReduce(_, _, _)
+SeqReduce(Op(_, _), seq, value) ==
+   IF seq = <<>> THEN value
+                 ELSE SeqReduce(Op, Tail(seq), Op(Head(seq), value))
 RECURSIVE SetReduce(_, _, _)
-SetReduce(Op(_, _), S, value) ==
-   IF S = {} THEN value
-             ELSE LET s == (CHOOSE s \in S : TRUE) 
-                  IN SetReduce(Op, S \ {s}, Op(s, value))
+SetReduce(Op(_, _), set, value) ==
+   IF set = {} THEN value
+               ELSE LET elem == (CHOOSE elem \in set : TRUE)
+                    IN SetReduce (Op, set \ {elem}, Op(elem, value))
 
-Sum(S) == LET sum(a, b) == a + b IN SetReduce(sum, S, 0)
+Sum(S) == LET sum(a, b) == a + b
+          IN SeqReduce(sum, S, 0)
 
-SumDataValues(data) == LET add(a, b) == a[3] + b 
+SumDataValues(data) == LET add(a, b) == a[3] + b
                        IN SetReduce(add, data, 0)
 
 Key(data, key) == { d \in data : d[2] = key }
 At(data, time) == { d \in data : d[1] =< time }
 Last(data) == { d \in data : (\A d2 \in data : d2[1] <= d[1]) }
 
-ReadAt(data, key, time) == Last(At(Key(data, key), time)) 
+ReadAt(data, key, time) == Last(At(Key(data, key), time))
+MetaAt(meta, time) == LET add(a, b) == b + (IF a[1] <= time THEN a[1]
+                                                            ELSE 0)
+                      IN SetReduce(add, meta, 0)
 \* `^\newpage^'
 (*********
 
@@ -41,17 +49,15 @@ ReadAt(data, key, time) == Last(At(Key(data, key), time))
 variables
     \* Process Ids
     Proc = {1, 2};
-    
+
     \* A set of transactions, each with a sequence of << key, value >> pairs to be upserted.
     txns = InitTxns,
 
     \* Set of keys with uncommitted writes pending.
     uncommitted = { },
-    
     \* Set of all locally committed writes to the database as << optime, key, value >> pairs.
     data = InitData,
-    
-    \* meta is a set of <<optime, value >> pairs reflecting the in-memory derived metadata state.
+    \* `meta' is a set of <<optime, value >> pairs reflecting the in-memory derived metadata state.
     meta = { <<0, SumDataValues (data) >> },
     
     lastOpTime = 0;
@@ -61,12 +67,10 @@ variables
         delta;
     {
     l1:
-        delta := [i \in 1 .. Len(txn) |-> 
-                  txn[i][2] - PickValueOr(Last(Key(snapshot, txn[i][1])), <<0, txn[i][1], 0>>)[3]];
-        if (lastOpTime = 1) print <<"txn",  txn, "delta", delta>>;
-        
-        \* meta := meta \cup { << opTime, Sum(SeqToSet(delta)) >> };
-    l1a:
+        delta := [i \in 1 .. Len(txn) |->
+                 txn[i][2] - PickValueOr(Last(Key(snapshot, txn[i][1])), <<0, txn[i][1], 0>>)[3]];
+        meta := meta \cup { << opTime, Sum(delta) >> };
+    l2:
        return;
     };
 
@@ -94,6 +98,7 @@ variables
         uncommitted := { key \in uncommitted : (\A i \in 1 .. Len(txn) : txn[i][1] /= key) };
         data := data \cup SeqToSet([ i \in 1 .. Len(txn) |-> << opTime >> \o txn[i] ]);
     onCommit:
+        \* assert MetaAt(meta, opTime) = SumDataValues(At(data, opTime));
         return;
     };
 
@@ -109,11 +114,12 @@ variables
     }
 }
 
-********) \* `^\newpage^'
-\* BEGIN TRANSLATION (chksum(pcal) = "b114aaa0" /\ chksum(tla) = "a943f85f")
-\* Procedure variable snapshot of procedure ApplyOps at line 75 col 9 changed to snapshot_
-\* Procedure variable opTime of procedure ApplyOps at line 76 col 9 changed to opTime_
-\* Parameter txn of procedure Observe at line 59 col 41 changed to txn_
+********)
+
+\* BEGIN TRANSLATION (chksum(pcal) = "134c96a9" /\ chksum(tla) = "bae07035")
+\* Procedure variable snapshot of procedure ApplyOps at line 79 col 9 changed to snapshot_
+\* Procedure variable opTime of procedure ApplyOps at line 80 col 9 changed to opTime_
+\* Parameter txn of procedure Observe at line 65 col 41 changed to txn_
 CONSTANT defaultInitValue
 VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
           snapshot, txn_, delta, txn, snapshot_, opTime_, stmtId
@@ -145,26 +151,24 @@ Init == (* Global variables *)
 
 l1(self) == /\ pc[self] = "l1"
             /\ delta' = [delta EXCEPT ![self] = [i \in 1 .. Len(txn_[self]) |->
-                                                 txn_[self][i][2] - PickValueOr(Last(Key(snapshot[self], txn_[self][i][1])), <<0, txn_[self][i][1], 0>>)[3]]]
-            /\ IF lastOpTime = 1
-                  THEN /\ PrintT(<<"txn",  txn_[self], "delta", delta'[self]>>)
-                  ELSE /\ TRUE
-            /\ pc' = [pc EXCEPT ![self] = "l1a"]
+                                                txn_[self][i][2] - PickValueOr(Last(Key(snapshot[self], txn_[self][i][1])), <<0, txn_[self][i][1], 0>>)[3]]]
+            /\ meta' = (meta \cup { << opTime[self], Sum(delta'[self]) >> })
+            /\ pc' = [pc EXCEPT ![self] = "l2"]
+            /\ UNCHANGED << Proc, txns, uncommitted, data, lastOpTime, stack, 
+                            opTime, snapshot, txn_, txn, snapshot_, opTime_, 
+                            stmtId >>
+
+l2(self) == /\ pc[self] = "l2"
+            /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+            /\ delta' = [delta EXCEPT ![self] = Head(stack[self]).delta]
+            /\ opTime' = [opTime EXCEPT ![self] = Head(stack[self]).opTime]
+            /\ snapshot' = [snapshot EXCEPT ![self] = Head(stack[self]).snapshot]
+            /\ txn_' = [txn_ EXCEPT ![self] = Head(stack[self]).txn_]
+            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
             /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
-                            stack, opTime, snapshot, txn_, txn, snapshot_, 
-                            opTime_, stmtId >>
+                            txn, snapshot_, opTime_, stmtId >>
 
-l1a(self) == /\ pc[self] = "l1a"
-             /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-             /\ delta' = [delta EXCEPT ![self] = Head(stack[self]).delta]
-             /\ opTime' = [opTime EXCEPT ![self] = Head(stack[self]).opTime]
-             /\ snapshot' = [snapshot EXCEPT ![self] = Head(stack[self]).snapshot]
-             /\ txn_' = [txn_ EXCEPT ![self] = Head(stack[self]).txn_]
-             /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-             /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
-                             txn, snapshot_, opTime_, stmtId >>
-
-Observe(self) == l1(self) \/ l1a(self)
+Observe(self) == l1(self) \/ l2(self)
 
 write(self) == /\ pc[self] = "write"
                /\ IF stmtId[self] < Len(txn[self])
@@ -262,5 +266,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION
 =============================================================================
 \* Modification History
-\* Last modified Wed Mar 23 15:26:03 EDT 2022 by bosch
+\* Last modified Wed Mar 23 17:44:12 EDT 2022 by bosch
 \* Created Mon Mar 14 08:30:23 EDT 2022 by bosch
