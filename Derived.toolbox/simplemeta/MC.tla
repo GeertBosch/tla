@@ -2,7 +2,7 @@
 EXTENDS Derived, TLC
 
 \* CONSTANT definitions @modelParameterConstants:1InitTxns
-const_164807185658054000 == 
+const_1648074592195108000 == 
 { << << "x", 1 >> >>,
   << << "x", 7 >> >>,
   << << "y", 7 >> >>, 
@@ -10,10 +10,10 @@ const_164807185658054000 ==
 ----
 
 \* CONSTANT definitions @modelParameterConstants:2InitData
-const_164807185658055000 == 
-{ << 1, "z", 1 >>, << 0, "z", 2 >>, << 0, "x", 2 >> }
+const_1648074592195109000 == 
+{ << 0, "x", 1 >>, << 0, "y", 2 >>, << 0, "z", 2 >> }
 ----
 
 ====================================================================================================
 \* Modification History
-\* Created Wed Mar 23 17:44:16 EDT 2022 by bosch
+\* Created Wed Mar 23 18:29:52 EDT 2022 by bosch

@@ -35,12 +35,13 @@ SumDataValues(data) == LET add(a, b) == a[3] + b
 
 Key(data, key) == { d \in data : d[2] = key }
 At(data, time) == { d \in data : d[1] =< time }
-Last(data) == { d \in data : (\A d2 \in data : d2[1] <= d[1]) }
+Last(data) == { d \in data : (\A d2 \in data : d2[2] /= d[2] \/ d2[1] <= d[1]) }
 
 ReadAt(data, key, time) == Last(At(Key(data, key), time))
-MetaAt(meta, time) == LET add(a, b) == b + (IF a[1] <= time THEN a[1]
-                                                            ELSE 0)
-                      IN SetReduce(add, meta, 0)
+IsVisible(snapshot, opTime) == \E op \in snapshot : op[1] = opTime
+ReadMeta(meta, snapshot) == LET add(a, b) == b + (IF IsVisible(snapshot, a[1]) THEN a[2]
+                                                                               ELSE 0)
+                            IN SetReduce(add, meta, 0)
 \* `^\newpage^'
 (*********
 
@@ -48,7 +49,7 @@ MetaAt(meta, time) == LET add(a, b) == b + (IF a[1] <= time THEN a[1]
 
 variables
     \* Process Ids
-    Proc = {1, 2};
+    Proc = {1};
 
     \* A set of transactions, each with a sequence of << key, value >> pairs to be upserted.
     txns = InitTxns,
@@ -98,7 +99,7 @@ variables
         uncommitted := { key \in uncommitted : (\A i \in 1 .. Len(txn) : txn[i][1] /= key) };
         data := data \cup SeqToSet([ i \in 1 .. Len(txn) |-> << opTime >> \o txn[i] ]);
     onCommit:
-        \* assert MetaAt(meta, opTime) = SumDataValues(At(data, opTime));
+        assert ReadMeta(meta, snapshot) = SumDataValues(Last(snapshot));
         return;
     };
 
@@ -116,10 +117,10 @@ variables
 
 ********)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "134c96a9" /\ chksum(tla) = "bae07035")
-\* Procedure variable snapshot of procedure ApplyOps at line 79 col 9 changed to snapshot_
-\* Procedure variable opTime of procedure ApplyOps at line 80 col 9 changed to opTime_
-\* Parameter txn of procedure Observe at line 65 col 41 changed to txn_
+\* BEGIN TRANSLATION (chksum(pcal) = "e5408177" /\ chksum(tla) = "d2a9b1f3")
+\* Procedure variable snapshot of procedure ApplyOps at line 80 col 9 changed to snapshot_
+\* Procedure variable opTime of procedure ApplyOps at line 81 col 9 changed to opTime_
+\* Parameter txn of procedure Observe at line 66 col 41 changed to txn_
 CONSTANT defaultInitValue
 VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
           snapshot, txn_, delta, txn, snapshot_, opTime_, stmtId
@@ -130,7 +131,7 @@ vars == << Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime,
 ProcSet == (Proc)
 
 Init == (* Global variables *)
-        /\ Proc = {1, 2}
+        /\ Proc = {1}
         /\ txns = InitTxns
         /\ uncommitted = { }
         /\ data = InitData
@@ -215,6 +216,8 @@ commitTransaction(self) == /\ pc[self] = "commitTransaction"
                                            snapshot_, opTime_, stmtId >>
 
 onCommit(self) == /\ pc[self] = "onCommit"
+                  /\ Assert(ReadMeta(meta, snapshot_[self]) = SumDataValues(Last(snapshot_[self])), 
+                            "Failure of assertion at line 102, column 9.")
                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                   /\ snapshot_' = [snapshot_ EXCEPT ![self] = Head(stack[self]).snapshot_]
                   /\ opTime_' = [opTime_ EXCEPT ![self] = Head(stack[self]).opTime_]
@@ -266,5 +269,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION
 =============================================================================
 \* Modification History
-\* Last modified Wed Mar 23 17:44:12 EDT 2022 by bosch
+\* Last modified Wed Mar 23 18:28:05 EDT 2022 by bosch
 \* Created Mon Mar 14 08:30:23 EDT 2022 by bosch
