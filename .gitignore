@@ -1,0 +1,8 @@
+*.aux
+*.launch
+*.log
+*.out
+*.pdf
+*.pmap
+*.tex
+*_SnapShot_*
