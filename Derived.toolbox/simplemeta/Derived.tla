@@ -8,7 +8,7 @@ EXTENDS Integers, Sequences, TLC, FiniteSets
 \* representing the sum of all values.
 
 \* To be set in model, see 'data' variable below.
-CONSTANT InitData, InitTxns
+CONSTANT InitData, InitTxns, ReadProc, WriteProc
 
 \* Convert a sequence << a, b, ... >> to a set { a, b, ... }
 RECURSIVE SeqToSet(_)
@@ -26,16 +26,16 @@ SetReduce(Op(_, _), set, value) ==
    IF set = {} THEN value
                ELSE LET elem == (CHOOSE elem \in set : TRUE)
                     IN SetReduce (Op, set \ {elem}, Op(elem, value))
-
 Sum(S) == LET sum(a, b) == a + b
           IN SeqReduce(sum, S, 0)
-
 SumDataValues(data) == LET add(a, b) == a[3] + b
                        IN SetReduce(add, data, 0)
 
 Key(data, key) == { d \in data : d[2] = key }
 At(data, time) == { d \in data : d[1] =< time }
 Last(data) == { d \in data : (\A d2 \in data : d2[2] /= d[2] \/ d2[1] <= d[1]) }
+
+IsDurable(data, opTime) == \A t \in 1 .. opTime : \E d \in data : d[1] = t
 
 ReadAt(data, key, time) == Last(At(Key(data, key), time))
 DeltaFor(snapshot, key, value) == value - PickValueOr(Last(Key(snapshot, key)), <<0, key, 0>>)[3]
@@ -45,6 +45,7 @@ ReadMeta(meta, snapshot) == LET add(a, b) == b + (IF IsVisible(snapshot, a[1]) T
                                                                                ELSE 0)
                             IN SetReduce(add, meta, 0)
 CheckMeta(meta, data) == ReadMeta(meta, data) = SumDataValues(Last(data))
+MetaAt(meta, time) == { m \in meta : m[1] =< time }
 \* `^\newpage^'
 (*********
 
@@ -106,8 +107,17 @@ variables
         assert CheckMeta(meta, snapshot);
         return;
     };
+    
+    process (reader \in ReadProc)
+    variables
+        snapshot = data;
+    {
+        l3:
+           assert ReadMeta(meta, snapshot) = SumDataValues(Last(snapshot));
+           \* assert SumDataValues(Last(snapshot)) = Sum(ReadMeta(meta, snapshot));
+    }
 
-    process (writer \in Proc)
+    process (writer \in WriteProc)
     {
         l3:
         while (txns # {}) {
@@ -121,18 +131,20 @@ variables
 
 ********)
 \* `^\newpage^'
-\* BEGIN TRANSLATION (chksum(pcal) = "d287d37a" /\ chksum(tla) = "b35ffda")
-\* Procedure variable snapshot of procedure ApplyOps at line 80 col 9 changed to snapshot_
-\* Procedure variable opTime of procedure ApplyOps at line 81 col 9 changed to opTime_
-\* Parameter txn of procedure Observe at line 67 col 41 changed to txn_
+\* BEGIN TRANSLATION (chksum(pcal) = "e86c939b" /\ chksum(tla) = "62172a22")
+\* Label l3 of process reader at line 116 col 12 changed to l3_
+\* Process variable snapshot of process reader at line 113 col 9 changed to snapshot_
+\* Procedure variable snapshot of procedure ApplyOps at line 81 col 9 changed to snapshot_A
+\* Procedure variable opTime of procedure ApplyOps at line 82 col 9 changed to opTime_
+\* Parameter txn of procedure Observe at line 68 col 41 changed to txn_
 CONSTANT defaultInitValue
 VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
-          snapshot, txn_, txn, snapshot_, opTime_, stmtId
+          snapshot, txn_, txn, snapshot_A, opTime_, stmtId, snapshot_
 
 vars == << Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
-           snapshot, txn_, txn, snapshot_, opTime_, stmtId >>
+           snapshot, txn_, txn, snapshot_A, opTime_, stmtId, snapshot_ >>
 
-ProcSet == (Proc)
+ProcSet == (ReadProc) \cup (WriteProc)
 
 Init == (* Global variables *)
         /\ Proc = {1, 2}
@@ -147,11 +159,14 @@ Init == (* Global variables *)
         /\ txn_ = [ self \in ProcSet |-> defaultInitValue]
         (* Procedure ApplyOps *)
         /\ txn = [ self \in ProcSet |-> defaultInitValue]
-        /\ snapshot_ = [ self \in ProcSet |-> defaultInitValue]
+        /\ snapshot_A = [ self \in ProcSet |-> defaultInitValue]
         /\ opTime_ = [ self \in ProcSet |-> defaultInitValue]
         /\ stmtId = [ self \in ProcSet |-> 0]
+        (* Process reader *)
+        /\ snapshot_ = [self \in ReadProc |-> data]
         /\ stack = [self \in ProcSet |-> << >>]
-        /\ pc = [self \in ProcSet |-> "l3"]
+        /\ pc = [self \in ProcSet |-> CASE self \in ReadProc -> "l3_"
+                                        [] self \in WriteProc -> "l3"]
 
 l1(self) == /\ pc[self] = "l1"
             /\ meta' = (        meta \cup { <<
@@ -160,8 +175,8 @@ l1(self) == /\ pc[self] = "l1"
                         )>> })
             /\ pc' = [pc EXCEPT ![self] = "l2"]
             /\ UNCHANGED << Proc, txns, uncommitted, data, lastOpTime, stack, 
-                            opTime, snapshot, txn_, txn, snapshot_, opTime_, 
-                            stmtId >>
+                            opTime, snapshot, txn_, txn, snapshot_A, opTime_, 
+                            stmtId, snapshot_ >>
 
 l2(self) == /\ pc[self] = "l2"
             /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -170,7 +185,7 @@ l2(self) == /\ pc[self] = "l2"
             /\ txn_' = [txn_ EXCEPT ![self] = Head(stack[self]).txn_]
             /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
             /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
-                            txn, snapshot_, opTime_, stmtId >>
+                            txn, snapshot_A, opTime_, stmtId, snapshot_ >>
 
 Observe(self) == l1(self) \/ l2(self)
 
@@ -180,24 +195,24 @@ write(self) == /\ pc[self] = "write"
                           /\ ~(txn[self][stmtId'[self]][1] \in uncommitted)
                           /\ uncommitted' = (uncommitted \cup {txn[self][stmtId'[self]][1]})
                           /\ pc' = [pc EXCEPT ![self] = "write"]
-                          /\ UNCHANGED snapshot_
-                     ELSE /\ snapshot_' = [snapshot_ EXCEPT ![self] = data]
+                          /\ UNCHANGED snapshot_A
+                     ELSE /\ snapshot_A' = [snapshot_A EXCEPT ![self] = data]
                           /\ pc' = [pc EXCEPT ![self] = "nextOpTime"]
                           /\ UNCHANGED << uncommitted, stmtId >>
                /\ UNCHANGED << Proc, txns, data, meta, lastOpTime, stack, 
-                               opTime, snapshot, txn_, txn, opTime_ >>
+                               opTime, snapshot, txn_, txn, opTime_, snapshot_ >>
 
 nextOpTime(self) == /\ pc[self] = "nextOpTime"
                     /\ lastOpTime' = lastOpTime + 1
                     /\ opTime_' = [opTime_ EXCEPT ![self] = lastOpTime']
                     /\ pc' = [pc EXCEPT ![self] = "observe"]
                     /\ UNCHANGED << Proc, txns, uncommitted, data, meta, stack, 
-                                    opTime, snapshot, txn_, txn, snapshot_, 
-                                    stmtId >>
+                                    opTime, snapshot, txn_, txn, snapshot_A, 
+                                    stmtId, snapshot_ >>
 
 observe(self) == /\ pc[self] = "observe"
                  /\ /\ opTime' = [opTime EXCEPT ![self] = opTime_[self]]
-                    /\ snapshot' = [snapshot EXCEPT ![self] = snapshot_[self]]
+                    /\ snapshot' = [snapshot EXCEPT ![self] = snapshot_A[self]]
                     /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Observe",
                                                              pc        |->  "commitTransaction",
                                                              opTime    |->  opTime[self],
@@ -207,7 +222,8 @@ observe(self) == /\ pc[self] = "observe"
                     /\ txn_' = [txn_ EXCEPT ![self] = txn[self]]
                  /\ pc' = [pc EXCEPT ![self] = "l1"]
                  /\ UNCHANGED << Proc, txns, uncommitted, data, meta, 
-                                 lastOpTime, txn, snapshot_, opTime_, stmtId >>
+                                 lastOpTime, txn, snapshot_A, opTime_, stmtId, 
+                                 snapshot_ >>
 
 commitTransaction(self) == /\ pc[self] = "commitTransaction"
                            /\ data' = (data \cup SeqToSet([ i \in 1 .. Len(txn[self]) |-> << opTime_[self] >> \o txn[self][i] ]))
@@ -215,22 +231,34 @@ commitTransaction(self) == /\ pc[self] = "commitTransaction"
                            /\ pc' = [pc EXCEPT ![self] = "onCommit"]
                            /\ UNCHANGED << Proc, txns, meta, lastOpTime, stack, 
                                            opTime, snapshot, txn_, txn, 
-                                           snapshot_, opTime_, stmtId >>
+                                           snapshot_A, opTime_, stmtId, 
+                                           snapshot_ >>
 
 onCommit(self) == /\ pc[self] = "onCommit"
-                  /\ Assert(CheckMeta(meta, snapshot_[self]), 
-                            "Failure of assertion at line 106, column 9.")
+                  /\ Assert(CheckMeta(meta, snapshot_A[self]), 
+                            "Failure of assertion at line 107, column 9.")
                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                  /\ snapshot_' = [snapshot_ EXCEPT ![self] = Head(stack[self]).snapshot_]
+                  /\ snapshot_A' = [snapshot_A EXCEPT ![self] = Head(stack[self]).snapshot_A]
                   /\ opTime_' = [opTime_ EXCEPT ![self] = Head(stack[self]).opTime_]
                   /\ stmtId' = [stmtId EXCEPT ![self] = Head(stack[self]).stmtId]
                   /\ txn' = [txn EXCEPT ![self] = Head(stack[self]).txn]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                   /\ UNCHANGED << Proc, txns, uncommitted, data, meta, 
-                                  lastOpTime, opTime, snapshot, txn_ >>
+                                  lastOpTime, opTime, snapshot, txn_, 
+                                  snapshot_ >>
 
 ApplyOps(self) == write(self) \/ nextOpTime(self) \/ observe(self)
                      \/ commitTransaction(self) \/ onCommit(self)
+
+l3_(self) == /\ pc[self] = "l3_"
+             /\ Assert(ReadMeta(meta, snapshot_[self]) = SumDataValues(Last(snapshot_[self])), 
+                       "Failure of assertion at line 116, column 12.")
+             /\ pc' = [pc EXCEPT ![self] = "Done"]
+             /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
+                             stack, opTime, snapshot, txn_, txn, snapshot_A, 
+                             opTime_, stmtId, snapshot_ >>
+
+reader(self) == l3_(self)
 
 l3(self) == /\ pc[self] = "l3"
             /\ IF txns # {}
@@ -238,21 +266,21 @@ l3(self) == /\ pc[self] = "l3"
                             /\ txns' = txns \ { nextTxn }
                             /\ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "ApplyOps",
                                                                         pc        |->  "l3",
-                                                                        snapshot_ |->  snapshot_[self],
+                                                                        snapshot_A |->  snapshot_A[self],
                                                                         opTime_   |->  opTime_[self],
                                                                         stmtId    |->  stmtId[self],
                                                                         txn       |->  txn[self] ] >>
                                                                     \o stack[self]]
                                /\ txn' = [txn EXCEPT ![self] = nextTxn]
-                            /\ snapshot_' = [snapshot_ EXCEPT ![self] = defaultInitValue]
+                            /\ snapshot_A' = [snapshot_A EXCEPT ![self] = defaultInitValue]
                             /\ opTime_' = [opTime_ EXCEPT ![self] = defaultInitValue]
                             /\ stmtId' = [stmtId EXCEPT ![self] = 0]
                             /\ pc' = [pc EXCEPT ![self] = "write"]
                   ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                       /\ UNCHANGED << txns, stack, txn, snapshot_, opTime_, 
+                       /\ UNCHANGED << txns, stack, txn, snapshot_A, opTime_, 
                                        stmtId >>
             /\ UNCHANGED << Proc, uncommitted, data, meta, lastOpTime, opTime, 
-                            snapshot, txn_ >>
+                            snapshot, txn_, snapshot_ >>
 
 writer(self) == l3(self)
 
@@ -261,7 +289,8 @@ Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
                /\ UNCHANGED vars
 
 Next == (\E self \in ProcSet: Observe(self) \/ ApplyOps(self))
-           \/ (\E self \in Proc: writer(self))
+           \/ (\E self \in ReadProc: reader(self))
+           \/ (\E self \in WriteProc: writer(self))
            \/ Terminating
 
 Spec == Init /\ [][Next]_vars
@@ -271,5 +300,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION
 =============================================================================
 \* Modification History
-\* Last modified Thu Mar 24 15:29:16 EDT 2022 by bosch
+\* Last modified Fri Mar 25 15:59:35 EDT 2022 by bosch
 \* Created Mon Mar 14 08:30:23 EDT 2022 by bosch
