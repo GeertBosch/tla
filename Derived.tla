@@ -1,7 +1,7 @@
 ------------------------------ MODULE Derived ------------------------------
 EXTENDS Integers, Sequences, TLC, FiniteSets
 
-\* This module models a method to keep in-memory derived metadata consistent 
+\* This module models a method to keep in-memory derived metadata consistent
 \* with persisted collection data. The model includes snapshot and timestamp
 \* semantics as implemented in MongoDB and the WiredTiger storage engine.
 \* For simplicity model a single key/value store, and a single metadata value
@@ -12,10 +12,9 @@ CONSTANT InitData, InitTxns, ReadProc, WriteProc
 
 \* Convert a sequence << a, b, ... >> to a set { a, b, ... }
 RECURSIVE SeqToSet(_)
-SeqToSet(seq) == IF seq = << >> THEN {} ELSE { Head(seq) } \cup SeqToSet(Tail(seq))
+SeqToSet(seq) == IF seq = <<>> THEN {} ELSE { Head(seq) } \cup SeqToSet(Tail(seq))
 
-PickValueOr(set, default) == IF set = {} THEN default ELSE CHOOSE s \in set : {s} = set 
- 
+PickValueOr(set, default) == IF set = {} THEN default ELSE CHOOSE s \in set : {s} = set
 \* Reduction operator for Sequences and Sets
 RECURSIVE SeqReduce(_, _, _)
 SeqReduce(Op(_, _), seq, value) ==
@@ -47,9 +46,7 @@ MetaAt(meta, time) == { m \in meta : m[1] =< time }
 allDurable(data) == { d \in data : /\ (\A t \in 1 .. d[1] : IsVisible(data, t))
                                    /\ ~IsVisible(data, d[1] + 1) }
 \* `^\newpage^'
-(*********
-
---algorithm Metadata {
+(*--algorithm Metadata {
 
 variables
     \* Process Ids
@@ -62,16 +59,17 @@ variables
     data = InitData,
     \* `meta' is a set of <<optime, value >> pairs reflecting the in-memory derived metadata state.
     meta = { <<0, SumDataValues (data) >> },
-    
+
     lastOpTime = 0;
 
     procedure Observe(opTime, snapshot, txn)
-    { l1: 
-        meta := meta \cup { << 
-            opTime, 
+    {
+      l1:
+        meta := meta \cup {<<
+            opTime,
             Sum([i \in 1 .. Len(txn) |-> DeltaFor(snapshot, txn[i][1], txn[i][2])])
-        >> };
-      l2: 
+        >>};
+      l2:
         return;
     }
 
@@ -105,39 +103,37 @@ variables
       onCommit:
         return;
     };
-    
+
     process (reader \in ReadProc)
     variables
         snapshot = data;
-    { l1: 
-        assert ReadMeta(meta, snapshot) = SumDataValues(Last(snapshot));
+    {
+    l1: assert ReadMeta(meta, snapshot) = SumDataValues(Last(snapshot));
     }
 
     process (writer \in WriteProc)
     {
-    l1: while (txns # {}) {
+    l1: while (txns /= {}) {
             with (nextTxn \in txns) {
-                txns := txns \ { nextTxn } ;
+                txns := txns \ { nextTxn };
                 call ApplyOps(nextTxn);
             }
         }
     }
-}
-
-********)
+}*)
 \* `^\newpage^'
-\* BEGIN TRANSLATION (chksum(pcal) = "c3c2ecb2" /\ chksum(tla) = "fd96bfd9")
-\* Label l1 of procedure Observe at line 68 col 7 changed to l1_
-\* Label l1 of process reader at line 112 col 9 changed to l1_r
-\* Process variable snapshot of process reader at line 110 col 9 changed to snapshot_
+\* BEGIN TRANSLATION (chksum(pcal) = "3fbc204a" /\ chksum(tla) = "9a154b07")
+\* Label l1 of procedure Observe at line 68 col 9 changed to l1_
+\* Label l1 of process reader at line 111 col 9 changed to l1_r
+\* Process variable snapshot of process reader at line 109 col 9 changed to snapshot_
 \* Procedure variable snapshot of procedure ApplyOps at line 78 col 9 changed to snapshot_A
 \* Procedure variable opTime of procedure ApplyOps at line 79 col 9 changed to opTime_
-\* Parameter txn of procedure Observe at line 66 col 41 changed to txn_
+\* Parameter txn of procedure Observe at line 65 col 41 changed to txn_
 CONSTANT defaultInitValue
-VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
+VARIABLES Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime,
           snapshot, txn_, txn, snapshot_A, opTime_, stmtId, snapshot_
 
-vars == << Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime, 
+vars == << Proc, txns, uncommitted, data, meta, lastOpTime, pc, stack, opTime,
            snapshot, txn_, txn, snapshot_A, opTime_, stmtId, snapshot_ >>
 
 ProcSet == (ReadProc) \cup (WriteProc)
@@ -165,13 +161,13 @@ Init == (* Global variables *)
                                         [] self \in WriteProc -> "l1"]
 
 l1_(self) == /\ pc[self] = "l1_"
-             /\ meta' = (      meta \cup { <<
+             /\ meta' = (        meta \cup {<<
                              opTime[self],
-                            Sum([i \in 1 .. Len(txn_[self]) |-> DeltaFor(snapshot[self], txn_[self][i][1], txn_[self][i][2])])
-                         >> })
+                             Sum([i \in 1 .. Len(txn_[self]) |-> DeltaFor(snapshot[self], txn_[self][i][1], txn_[self][i][2])])
+                         >>})
              /\ pc' = [pc EXCEPT ![self] = "l2"]
-             /\ UNCHANGED << Proc, txns, uncommitted, data, lastOpTime, stack, 
-                             opTime, snapshot, txn_, txn, snapshot_A, opTime_, 
+             /\ UNCHANGED << Proc, txns, uncommitted, data, lastOpTime, stack,
+                             opTime, snapshot, txn_, txn, snapshot_A, opTime_,
                              stmtId, snapshot_ >>
 
 l2(self) == /\ pc[self] = "l2"
@@ -180,7 +176,7 @@ l2(self) == /\ pc[self] = "l2"
             /\ snapshot' = [snapshot EXCEPT ![self] = Head(stack[self]).snapshot]
             /\ txn_' = [txn_ EXCEPT ![self] = Head(stack[self]).txn_]
             /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-            /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
+            /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime,
                             txn, snapshot_A, opTime_, stmtId, snapshot_ >>
 
 Observe(self) == l1_(self) \/ l2(self)
@@ -195,15 +191,15 @@ write(self) == /\ pc[self] = "write"
                      ELSE /\ snapshot_A' = [snapshot_A EXCEPT ![self] = data]
                           /\ pc' = [pc EXCEPT ![self] = "nextOpTime"]
                           /\ UNCHANGED << uncommitted, stmtId >>
-               /\ UNCHANGED << Proc, txns, data, meta, lastOpTime, stack, 
+               /\ UNCHANGED << Proc, txns, data, meta, lastOpTime, stack,
                                opTime, snapshot, txn_, txn, opTime_, snapshot_ >>
 
 nextOpTime(self) == /\ pc[self] = "nextOpTime"
                     /\ lastOpTime' = lastOpTime + 1
                     /\ opTime_' = [opTime_ EXCEPT ![self] = lastOpTime']
                     /\ pc' = [pc EXCEPT ![self] = "observe"]
-                    /\ UNCHANGED << Proc, txns, uncommitted, data, meta, stack, 
-                                    opTime, snapshot, txn_, txn, snapshot_A, 
+                    /\ UNCHANGED << Proc, txns, uncommitted, data, meta, stack,
+                                    opTime, snapshot, txn_, txn, snapshot_A,
                                     stmtId, snapshot_ >>
 
 observe(self) == /\ pc[self] = "observe"
@@ -217,47 +213,45 @@ observe(self) == /\ pc[self] = "observe"
                                                          \o stack[self]]
                     /\ txn_' = [txn_ EXCEPT ![self] = txn[self]]
                  /\ pc' = [pc EXCEPT ![self] = "l1_"]
-                 /\ UNCHANGED << Proc, txns, uncommitted, data, meta, 
-                                 lastOpTime, txn, snapshot_A, opTime_, stmtId, 
+                 /\ UNCHANGED << Proc, txns, uncommitted, data, meta,
+                                 lastOpTime, txn, snapshot_A, opTime_, stmtId,
                                  snapshot_ >>
 
 commitTransaction(self) == /\ pc[self] = "commitTransaction"
                            /\ data' = (data \cup SeqToSet([ i \in 1 .. Len(txn[self]) |-> << opTime_[self] >> \o txn[self][i] ]))
                            /\ uncommitted' = { key \in uncommitted : \A i \in 1 .. Len(txn[self]) : txn[self][i][1] /= key }
                            /\ pc' = [pc EXCEPT ![self] = "onCommit"]
-                           /\ UNCHANGED << Proc, txns, meta, lastOpTime, stack, 
-                                           opTime, snapshot, txn_, txn, 
-                                           snapshot_A, opTime_, stmtId, 
+                           /\ UNCHANGED << Proc, txns, meta, lastOpTime, stack,
+                                           opTime, snapshot, txn_, txn,
+                                           snapshot_A, opTime_, stmtId,
                                            snapshot_ >>
 
 onCommit(self) == /\ pc[self] = "onCommit"
-                  /\ Assert(CheckMeta(meta, snapshot_A[self]), 
-                            "Failure of assertion at line 104, column 9.")
                   /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                   /\ snapshot_A' = [snapshot_A EXCEPT ![self] = Head(stack[self]).snapshot_A]
                   /\ opTime_' = [opTime_ EXCEPT ![self] = Head(stack[self]).opTime_]
                   /\ stmtId' = [stmtId EXCEPT ![self] = Head(stack[self]).stmtId]
                   /\ txn' = [txn EXCEPT ![self] = Head(stack[self]).txn]
                   /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                  /\ UNCHANGED << Proc, txns, uncommitted, data, meta, 
-                                  lastOpTime, opTime, snapshot, txn_, 
+                  /\ UNCHANGED << Proc, txns, uncommitted, data, meta,
+                                  lastOpTime, opTime, snapshot, txn_,
                                   snapshot_ >>
 
 ApplyOps(self) == write(self) \/ nextOpTime(self) \/ observe(self)
                      \/ commitTransaction(self) \/ onCommit(self)
 
 l1_r(self) == /\ pc[self] = "l1_r"
-              /\ Assert(ReadMeta(meta, snapshot_[self]) = SumDataValues(Last(snapshot_[self])), 
-                        "Failure of assertion at line 112, column 9.")
+              /\ Assert(ReadMeta(meta, snapshot_[self]) = SumDataValues(Last(snapshot_[self])),
+                        "Failure of assertion at line 111, column 9.")
               /\ pc' = [pc EXCEPT ![self] = "Done"]
-              /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime, 
-                              stack, opTime, snapshot, txn_, txn, snapshot_A, 
+              /\ UNCHANGED << Proc, txns, uncommitted, data, meta, lastOpTime,
+                              stack, opTime, snapshot, txn_, txn, snapshot_A,
                               opTime_, stmtId, snapshot_ >>
 
 reader(self) == l1_r(self)
 
 l1(self) == /\ pc[self] = "l1"
-            /\ IF txns # {}
+            /\ IF txns /= {}
                   THEN /\ \E nextTxn \in txns:
                             /\ txns' = txns \ { nextTxn }
                             /\ /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "ApplyOps",
@@ -273,9 +267,9 @@ l1(self) == /\ pc[self] = "l1"
                             /\ stmtId' = [stmtId EXCEPT ![self] = 0]
                             /\ pc' = [pc EXCEPT ![self] = "write"]
                   ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
-                       /\ UNCHANGED << txns, stack, txn, snapshot_A, opTime_, 
+                       /\ UNCHANGED << txns, stack, txn, snapshot_A, opTime_,
                                        stmtId >>
-            /\ UNCHANGED << Proc, uncommitted, data, meta, lastOpTime, opTime, 
+            /\ UNCHANGED << Proc, uncommitted, data, meta, lastOpTime, opTime,
                             snapshot, txn_, snapshot_ >>
 
 writer(self) == l1(self)
